@@ -7,9 +7,8 @@ from extensions import db
 from models import User, Chat, Message
 
 app = Flask(__name__)
-# Фиксированный SECRET_KEY, чтобы сессии сохранялись
-app.config['SECRET_KEY'] = 'supersecret-dev'
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///skymessage.db'
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'supersecret-dev')
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///skymessage_vNext.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db.init_app(app)
 
@@ -123,11 +122,9 @@ def api_search_user():
     q = (request.json or {}).get('query','').strip()
     if not q:
         return jsonify({'error':'empty_query'}), 400
-    # Ищем всех пользователей, где username содержит q, кроме текущего
     users = User.query.filter(User.username.ilike(f"%{q}%"), User.id != u.id).all()
     if not users:
         return jsonify({'user': None})
-    # Возвращаем первого найденного
     user = users[0]
     return jsonify({'user': {'id': user.id, 'username': user.username}})
 
@@ -171,20 +168,18 @@ def api_send_message():
         'text': msg.text,
         'timestamp': msg.timestamp.isoformat()
     }
-    # Socket.IO: отправка всем участникам чата
-    room = f"chat_{chat.id}"
-    socketio.emit('message', payload, room=room)
+    socketio.emit('message', payload, room=f"chat_{chat.id}")
     return jsonify(payload)
 
-# --- Socket.IO events ---
+# --- Socket.IO ---
 @socketio.on('join_chat')
 def on_join_chat(data):
     chat_id = int(data.get('chat_id', 0))
     if chat_id:
         join_room(f"chat_{chat_id}")
 
+# --- Main ---
 if __name__ == '__main__':
-    import os
     with app.app_context():
         db.create_all()
     port = int(os.environ.get("PORT", 5000))
