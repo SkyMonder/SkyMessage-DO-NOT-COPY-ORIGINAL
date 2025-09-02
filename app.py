@@ -122,9 +122,14 @@ def api_search_user():
     q = (request.json or {}).get('query','').strip()
     if not q:
         return jsonify({'error':'empty_query'}), 400
+
+    # Регистронезависимый поиск
     users = User.query.filter(User.username.ilike(f"%{q}%"), User.id != u.id).all()
+
     if not users:
         return jsonify({'user': None})
+
+    # Возвращаем первого найденного
     user = users[0]
     return jsonify({'user': {'id': user.id, 'username': user.username}})
 
