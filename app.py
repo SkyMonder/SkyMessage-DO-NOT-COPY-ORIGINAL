@@ -123,13 +123,13 @@ def api_search_user():
     q = (request.json or {}).get('query','').strip()
     if not q:
         return jsonify({'error':'empty_query'}), 400
-    exact = User.query.filter(User.username==q, User.id!=u.id).first()
-    if exact:
-        return jsonify({'user': {'id': exact.id, 'username': exact.username}})
-    candidate = User.query.filter(User.username.like(f"%{q}%"), User.id!=u.id).first()
-    if candidate:
-        return jsonify({'user': {'id': candidate.id, 'username': candidate.username}})
-    return jsonify({'user': None})
+    # Ищем всех пользователей, где username содержит q, кроме текущего
+    users = User.query.filter(User.username.ilike(f"%{q}%"), User.id != u.id).all()
+    if not users:
+        return jsonify({'user': None})
+    # Возвращаем первого найденного
+    user = users[0]
+    return jsonify({'user': {'id': user.id, 'username': user.username}})
 
 @app.post('/api/create_chat')
 @login_required
