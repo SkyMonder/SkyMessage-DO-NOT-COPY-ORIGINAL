@@ -1,5 +1,5 @@
-flask>=3.0
-flask-socketio>=5.3
-flask-sqlalchemy>=3.1
-eventlet>=0.33
-werkzeug>=3.0
+Flask==2.3.6
+Flask-SocketIO==6.2.3
+SQLAlchemy==2.0.23
+eventlet==0.33.3
+Werkzeug==2.3.6
