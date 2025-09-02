@@ -16,6 +16,8 @@
           <a class="text-slate-400 hover:text-slate-200" href="/logout">Выйти</a>
         </div>
       </div>
+
+      <!-- Поиск пользователей -->
       <div class="p-3">
         <div class="text-xs uppercase text-slate-400 mb-2">Найти пользователя</div>
         <div class="flex gap-2">
@@ -24,9 +26,12 @@
         </div>
         <div id="searchResult" class="mt-2 text-sm"></div>
       </div>
+
       <div class="px-3 py-2 text-xs uppercase text-slate-400">Чаты</div>
       <ul id="chatList" class="flex-1 overflow-y-auto"></ul>
     </aside>
+
+    <!-- Основной чат -->
     <main class="h-full flex flex-col">
       <header id="chatHeader" class="h-16 border-b border-slate-800 flex items-center px-4">
         <div class="font-semibold">Выберите чат</div>
@@ -40,106 +45,110 @@
   </div>
 
 <script>
-let me=null, chats=[], selectedChatId=null;
+let me = null;
+let chats = [];
+let selectedChatId = null;
 const socket = io();
 
-function fmtTime(iso){ if(!iso) return ''; return new Date(iso).toLocaleString(); }
-function scrollBottom(){ const cont=document.getElementById('messages'); if(cont) cont.scrollTop=cont.scrollHeight; }
-
-function renderMsg(m){
-    const wrap=document.createElement('div');
-    const mine=m.sender_id===me.id;
-    wrap.className='max-w-[80%] '+(mine?'ml-auto text-right':'mr-auto text-left');
-    wrap.innerHTML=`<div class="inline-block px-3 py-2 rounded-xl ${mine?'bg-emerald-700':'bg-slate-800'}">
-                        <div class="text-sm">${m.text}</div>
-                        <div class="text-[10px] text-slate-300 mt-1">${fmtTime(m.timestamp)}</div>
-                     </div>`;
-    const cont=document.getElementById('messages');
-    if(cont){ cont.appendChild(wrap); scrollBottom(); }
+function fmtTime(iso){
+  if(!iso) return '';
+  const d = new Date(iso);
+  return d.toLocaleString();
 }
 
+// --- Получаем текущего пользователя ---
 async function fetchMe(){
-    const r=await fetch('/api/me'); const j=await r.json(); me=j.user;
-    if(!me) window.location='/login';
+  const r = await fetch('/api/me'); const j = await r.json(); me = j.user;
 }
 
+// --- Получаем список чатов ---
 async function fetchChats(){
-    const r=await fetch('/api/chats'); chats=await r.json();
-    const list=document.getElementById('chatList'); list.innerHTML='';
-    chats.forEach((c,i)=>{
-        const li=document.createElement('li');
-        li.className='px-3 py-3 hover:bg-slate-800 cursor-pointer border-b border-slate-800';
-        li.innerHTML=`<div class="font-semibold">@${c.peer.username}</div>
-                      <div class="text-slate-400 text-sm truncate">${c.last.text||''}</div>`;
-        li.onclick=()=>selectChat(c.id,c.peer.username);
-        list.appendChild(li);
-    });
+  const r = await fetch('/api/chats'); chats = await r.json();
+  const list = document.getElementById('chatList'); list.innerHTML='';
+  chats.forEach(c=>{
+    const li = document.createElement('li');
+    li.className = 'px-3 py-3 hover:bg-slate-800 cursor-pointer border-b border-slate-800';
+    li.innerHTML = `<div class="font-semibold">@${c.peer.username}</div>
+      <div class="text-slate-400 text-sm truncate">${c.last.text || ''}</div>`;
+    li.onclick = ()=> selectChat(c.id, c.peer.username);
+    list.appendChild(li);
+  });
 }
 
+// --- Выбираем чат ---
 async function selectChat(chatId, peerName){
-    selectedChatId=chatId;
-    document.getElementById('chatHeader').innerHTML='<div class="font-semibold">@'+peerName+'</div>';
-    document.getElementById('messages').innerHTML='';
-    socket.emit('join_chat',{chat_id:chatId});
-    const liIndex=chats.findIndex(c=>c.id===chatId);
-    const li=document.querySelector(`#chatList li:nth-child(${liIndex+1})`);
-    if(li) li.classList.remove('bg-slate-700');
-
-    const r=await fetch('/api/messages/'+chatId);
-    const msgs=await r.json();
-    msgs.forEach(renderMsg);
-    scrollBottom();
+  selectedChatId = chatId;
+  document.getElementById('chatHeader').innerHTML = '<div class="font-semibold">@'+peerName+'</div>';
+  document.getElementById('messages').innerHTML = '';
+  socket.emit('join_chat', {chat_id: chatId});
+  const r = await fetch('/api/messages/'+chatId); const msgs = await r.json();
+  msgs.forEach(renderMsg);
 }
 
-document.getElementById('sendBtn')?.addEventListener('click', async ()=>{
-    const input=document.getElementById('msgInput');
-    const text=input.value.trim();
-    if(!text||!selectedChatId) return;
-    const r=await fetch('/api/send_message',{
-        method:'POST',
-        headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({chat_id:selectedChatId, text})
-    });
-    if(r.ok){ input.value=''; }
+// --- Отображаем сообщение ---
+function renderMsg(m){
+  const wrap = document.createElement('div');
+  const mine = m.sender_id === me.id;
+  wrap.className = 'max-w-[80%] '+(mine?'ml-auto text-right':'mr-auto text-left');
+  wrap.innerHTML = `<div class="inline-block px-3 py-2 rounded-xl ${mine?'bg-emerald-700':'bg-slate-800'}">
+    <div class="text-sm">${m.text}</div>
+    <div class="text-[10px] text-slate-300 mt-1">${fmtTime(m.timestamp)}</div>
+  </div>`;
+  const cont = document.getElementById('messages');
+  cont.appendChild(wrap);
+  cont.scrollTop = cont.scrollHeight;
+}
+
+// --- Отправка сообщений ---
+document.getElementById('sendBtn').onclick = async ()=>{
+  const input = document.getElementById('msgInput');
+  const text = input.value.trim();
+  if(!text || !selectedChatId) return;
+  const r = await fetch('/api/send_message', {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({chat_id: selectedChatId, text})
+  });
+  const j = await r.json();
+  if(r.ok){ 
+    input.value=''; 
+    renderMsg(j); // сразу отображаем своё сообщение
+  }
+};
+
+// --- Поиск пользователей ---
+document.getElementById('searchBtn').onclick = async ()=>{
+  const q = document.getElementById('searchInput').value.trim();
+  const res = document.getElementById('searchResult');
+  res.textContent = 'Поиск...';
+  const r = await fetch('/api/search_user', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({query:q})});
+  const j = await r.json();
+  if(!j.user){ res.textContent = 'Никто не найден'; return; }
+  res.innerHTML = `Найден: <b>@${j.user.username}</b> <button id="startChat" class="ml-2 px-2 py-1 rounded bg-blue-600">Открыть чат</button>`;
+  document.getElementById('startChat').onclick = async ()=>{
+    const r2 = await fetch('/api/create_chat', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({peer_id: j.user.id})});
+    const j2 = await r2.json();
+    await fetchChats();
+    selectChat(j2.chat_id, j.user.username);
+  };
+};
+
+// --- Socket.IO ---
+socket.on('connect', ()=>{});
+socket.on('message', (m)=>{
+  if(m.chat_id === selectedChatId){
+    renderMsg(m);
+  } else {
+    fetchChats();
+  }
 });
 
-document.getElementById('searchBtn')?.addEventListener('click', async ()=>{
-    const q=document.getElementById('searchInput').value.trim();
-    const res=document.getElementById('searchResult');
-    res.textContent='Поиск...';
-    const r=await fetch('/api/search_user',{
-        method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({query:q})
-    });
-    const j=await r.json();
-    if(!j.user){ res.textContent='Никто не найден'; return; }
-    res.innerHTML=`Найден: <b>@${j.user.username}</b> <button id="startChat" class="ml-2 px-2 py-1 rounded bg-blue-600">Открыть чат</button>`;
-    document.getElementById('startChat')?.addEventListener('click', async ()=>{
-        const r2=await fetch('/api/create_chat',{
-            method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({peer_id:j.user.id})
-        });
-        const j2=await r2.json();
-        await fetchChats();
-        selectChat(j2.chat_id,j.user.username);
-    });
-});
-
-// Socket.IO обработка сообщений
-socket.on('message', m=>{
-    if(!m || !me) return;
-    const chatIndex=chats.findIndex(c=>c.id===m.chat_id);
-    if(chatIndex>=0){
-        chats[chatIndex].last={text:m.text,timestamp:m.timestamp};
-        const li=document.querySelector(`#chatList li:nth-child(${chatIndex+1})`);
-        if(li){
-            li.querySelector('div:nth-child(2)').textContent=m.text;
-            if(selectedChatId!==m.chat_id) li.classList.add('bg-slate-700');
-        }
-    }
-    if(selectedChatId===m.chat_id) renderMsg(m);
-});
-
-// Инициализация
-(async()=>{ await fetchMe(); await fetchChats(); })();
+// --- Инициализация ---
+(async function init(){
+  await fetchMe();
+  if(!me){ window.location = '/login'; return; }
+  await fetchChats();
+})();
 </script>
 </body>
 </html>
