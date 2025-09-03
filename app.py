@@ -2,11 +2,14 @@ import os
 from flask import Flask, render_template, request, session, jsonify, abort
 from flask_socketio import SocketIO, join_room
 from werkzeug.security import generate_password_hash, check_password_hash
+from sqlalchemy import or_
 from extensions import db
 from models import User, Chat, ChatMembers, Message, Call
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'supersecret-dev')
+
+# --- Database URL fix for Render ---
 db_url = os.environ.get('DATABASE_URL', 'sqlite:///local.db')
 if db_url.startswith("postgres://"):
     db_url = db_url.replace("postgres://", "postgresql://", 1)
@@ -14,12 +17,15 @@ app.config['SQLALCHEMY_DATABASE_URI'] = db_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db.init_app(app)
 
+# --- Socket.IO ---
 socketio = SocketIO(app, cors_allowed_origins='*', async_mode='threading')
+
 
 # --- Helpers ---
 def current_user():
     uid = session.get('user_id')
     return User.query.get(uid) if uid else None
+
 
 def login_required(fn):
     from functools import wraps
@@ -30,10 +36,13 @@ def login_required(fn):
         return fn(*args, **kwargs)
     return wrapper
 
+
 # --- Pages ---
-@app.get('/')
-def welcome():
+@app.route('/')
+def index():
+    """Главная страница — загружаем чаты"""
     return render_template('chats.html')
+
 
 # --- Auth ---
 @app.route('/register', methods=['POST'])
@@ -50,6 +59,7 @@ def register():
     session['user_id'] = user.id
     return jsonify({'ok': True})
 
+
 @app.route('/login', methods=['POST'])
 def login():
     username = request.json.get('username', '').strip()
@@ -60,18 +70,26 @@ def login():
         return jsonify({'ok': True})
     return jsonify({'error': 'wrong'}), 401
 
-@app.get('/logout')
+
+@app.route('/logout')
 def logout():
     session.pop('user_id', None)
     return jsonify({'ok': True})
 
+
 # --- API ---
-@app.get('/api/me')
+@app.route('/api/me')
 def api_me():
     u = current_user()
-    return jsonify({'user': {'id': u.id, 'username': u.username, 'theme': u.theme, 'avatar': u.avatar} if u else None})
+    return jsonify({'user': {
+        'id': u.id,
+        'username': u.username,
+        'theme': u.theme,
+        'avatar': u.avatar
+    } if u else None})
 
-@app.post('/api/set_theme')
+
+@app.route('/api/set_theme', methods=['POST'])
 @login_required
 def set_theme():
     u = current_user()
@@ -81,7 +99,8 @@ def set_theme():
         db.session.commit()
     return jsonify({'theme': u.theme})
 
-@app.get('/api/chats')
+
+@app.route('/api/chats')
 @login_required
 def api_chats():
     u = current_user()
@@ -103,7 +122,8 @@ def api_chats():
     result.sort(key=lambda x: x['last']['timestamp'] or '', reverse=True)
     return jsonify(result)
 
-@app.get('/api/messages/<int:chat_id>')
+
+@app.route('/api/messages/<int:chat_id>')
 @login_required
 def api_messages(chat_id):
     u = current_user()
@@ -120,7 +140,8 @@ def api_messages(chat_id):
         'timestamp': m.timestamp.isoformat()
     } for m in msgs])
 
-@app.post('/api/send_message')
+
+@app.route('/api/send_message', methods=['POST'])
 @login_required
 def api_send_message():
     u = current_user()
@@ -147,55 +168,37 @@ def api_send_message():
     socketio.emit('message', payload, room=f"chat_{chat.id}")
     return jsonify(payload)
 
-# --- New endpoints ---
-@app.post('/api/search_user')
-@login_required
-def api_search_user():
-    q = (request.json.get('query') or '').strip()
-    if not q:
-        return jsonify({'user': None})
-    u = User.query.filter(User.username.ilike(f"%{q}%")).first()
-    if not u:
-        return jsonify({'user': None})
-    return jsonify({'user': {'id': u.id, 'username': u.username}})
 
-@app.post('/api/create_chat')
-@login_required
-def api_create_chat():
-    u = current_user()
-    peer_id = request.json.get('peer_id')
-    peer = User.query.get_or_404(peer_id)
-    chat = Chat.query.filter(Chat.members.contains(u), Chat.members.contains(peer), Chat.is_group == False).first()
-    if not chat:
-        chat = Chat(is_group=False)
-        chat.members.append(u)
-        chat.members.append(peer)
-        db.session.add(chat)
-        db.session.commit()
-    return jsonify({'chat_id': chat.id})
-
-# --- Socket.IO ---
+# --- Socket.IO events ---
 @socketio.on('join_chat')
 def join(data):
     join_room(f"chat_{data.get('chat_id')}")
+
 
 @socketio.on('call_user')
 def handle_call(data):
     callee = data.get('callee_id')
     chat_id = data.get('chat_id')
     caller = current_user()
-    socketio.emit('incoming_call', {'caller_id': caller.id, 'chat_id': chat_id}, room=f"user_{callee}")
+    socketio.emit('incoming_call', {
+        'caller_id': caller.id,
+        'chat_id': chat_id
+    }, room=f"user_{callee}")
+
 
 @socketio.on('answer_call')
 def handle_answer(data):
     caller_id = data.get('caller_id')
     chat_id = data.get('chat_id')
     status = data.get('status')
-    socketio.emit('call_answered', {'chat_id': chat_id, 'status': status}, room=f"user_{caller_id}")
+    socketio.emit('call_answered', {
+        'chat_id': chat_id,
+        'status': status
+    }, room=f"user_{caller_id}")
 
-# --- Run ---
+
+# --- Start ---
 if __name__ == '__main__':
     with app.app_context():
         db.create_all()
     socketio.run(app, host='0.0.0.0', port=int(os.environ.get("PORT", 5000)), allow_unsafe_werkzeug=True)
-
