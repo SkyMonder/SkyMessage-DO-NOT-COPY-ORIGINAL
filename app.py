@@ -6,14 +6,10 @@ from sqlalchemy import or_
 from extensions import db
 from models import User, Chat, Message
 
-# --- Eventlet patch ---
-import eventlet
-eventlet.monkey_patch()
-
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'supersecret-dev')
 
-# --- Render DB fix: postgres:// → postgresql://
+# --- DB fix ---
 db_url = os.environ.get('DATABASE_URL', 'sqlite:///local.db')
 if db_url.startswith("postgres://"):
     db_url = db_url.replace("postgres://", "postgresql://", 1)
@@ -21,8 +17,8 @@ app.config['SQLALCHEMY_DATABASE_URI'] = db_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db.init_app(app)
 
-# --- SocketIO с eventlet ---
-socketio = SocketIO(app, cors_allowed_origins='*', async_mode='eventlet')
+# --- SocketIO ---
+socketio = SocketIO(app, cors_allowed_origins='*', async_mode='threading')  # no eventlet
 
 # --- Utilities ---
 def current_user():
@@ -87,9 +83,7 @@ def chats():
 @app.get('/api/me')
 def api_me():
     u = current_user()
-    if not u:
-        return jsonify({'user': None})
-    return jsonify({'user': {'id': u.id, 'username': u.username}})
+    return jsonify({'user': {'id': u.id, 'username': u.username}} if u else {'user': None})
 
 @app.get('/api/chats')
 @login_required
@@ -135,8 +129,7 @@ def api_search_user():
     exact = User.query.filter(User.username==q, User.id!=u.id).first()
     if exact:
         return jsonify({'user': {'id': exact.id, 'username': exact.username}})
-    # Ограничение для производительности
-    candidate = User.query.filter(User.username.ilike(f"%{q}%"), User.id!=u.id).limit(10).first()
+    candidate = User.query.filter(User.username.ilike(f"%{q}%"), User.id!=u.id).first()
     if candidate:
         return jsonify({'user': {'id': candidate.id, 'username': candidate.username}})
     return jsonify({'user': None})
@@ -181,9 +174,8 @@ def api_send_message():
         'text': msg.text,
         'timestamp': msg.timestamp.isoformat()
     }
-    # --- Отправка только П2 ---
     room = f"chat_{chat.id}"
-    socketio.emit('message', payload, room=room, skip_sid=request.sid)
+    socketio.emit('message', payload, room=room, include_self=False)  # не дублируем для отправителя
     return jsonify(payload)
 
 # --- Socket.IO events ---
@@ -193,9 +185,9 @@ def on_join_chat(data):
     if chat_id:
         join_room(f"chat_{chat_id}")
 
-# --- Инициализация ---
 if __name__ == '__main__':
     with app.app_context():
         db.create_all()
-    # --- Разрешаем запуск с Werkzeug в Render ---
+    # запускаем безопасно для Render
     socketio.run(app, host='0.0.0.0', port=int(os.environ.get("PORT", 5000)), allow_unsafe_werkzeug=True)
+
