@@ -14,7 +14,7 @@ app.config['SQLALCHEMY_DATABASE_URI'] = db_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db.init_app(app)
 
-socketio = SocketIO(app, cors_allowed_origins='*', async_mode='gevent')
+socketio = SocketIO(app, cors_allowed_origins='*', async_mode='threading')
 
 def current_user():
     uid = session.get('user_id')
