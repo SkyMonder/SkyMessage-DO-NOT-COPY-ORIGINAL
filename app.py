@@ -75,7 +75,7 @@ def api_chats():
     chats = u.chats
     result=[]
     for c in chats:
-        members=[{'id:m.id,'username':m.username} for m in c.members if m.id!=u.id]
+        members=[{'id': m.id, 'username': m.username} for m in c.members if m.id != u.id]
         last = Message.query.filter_by(chat_id=c.id).order_by(Message.timestamp.desc()).first()
         result.append({'id':c.id,'name':c.name,'is_group':c.is_group,'members':members,'last':{'text':last.text if last else '', 'timestamp':last.timestamp.isoformat() if last else None}})
     result.sort(key=lambda x:x['last']['timestamp'] or '',reverse=True)
