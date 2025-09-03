@@ -6,7 +6,6 @@ from sqlalchemy import or_
 from extensions import db
 from models import User, Chat, ChatMembers, Message, Call
 
-# --- Flask setup ---
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY','supersecret-dev')
 db_url = os.environ.get('DATABASE_URL','sqlite:///local.db')
@@ -15,10 +14,8 @@ app.config['SQLALCHEMY_DATABASE_URI'] = db_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db.init_app(app)
 
-# --- SocketIO ---
-socketio = SocketIO(app, cors_allowed_origins='*', async_mode='threading')
+socketio = SocketIO(app, cors_allowed_origins='*', async_mode='gevent')
 
-# --- Helpers ---
 def current_user():
     uid = session.get('user_id')
     return User.query.get(uid) if uid else None
@@ -31,16 +28,13 @@ def login_required(fn):
         return fn(*args, **kwargs)
     return wrapper
 
-# --- Routes ---
 @app.route('/', methods=['GET'])
-def welcome(): 
-    return render_template('chats.html')
+def welcome(): return render_template('chats.html')
 
 # --- Auth ---
 @app.route('/register', methods=['GET','POST'])
 def register():
-    if request.method == 'GET':
-        return render_template('register.html')
+    if request.method=='GET': return render_template('register.html')
     data = request.json or {}
     username = data.get('username','').strip()
     password = data.get('password','').strip()
@@ -53,8 +47,7 @@ def register():
 
 @app.route('/login', methods=['GET','POST'])
 def login():
-    if request.method == 'GET':
-        return render_template('login.html')
+    if request.method=='GET': return render_template('login.html')
     data = request.json or {}
     username = data.get('username','').strip()
     password = data.get('password','').strip()
@@ -65,9 +58,7 @@ def login():
     return jsonify({'error':'wrong'}),401
 
 @app.route('/logout', methods=['GET'])
-def logout(): 
-    session.pop('user_id',None)
-    return jsonify({'ok':True})
+def logout(): session.pop('user_id',None); return jsonify({'ok':True})
 
 # --- API ---
 @app.route('/api/me', methods=['GET'])
@@ -78,9 +69,8 @@ def api_me():
 @app.route('/api/set_theme', methods=['GET','POST'])
 @login_required
 def set_theme():
-    u = current_user()
-    if request.method == 'GET':
-        return jsonify({'theme': u.theme})
+    u=current_user()
+    if request.method=='GET': return jsonify({'theme': u.theme})
     t=request.json.get('theme')
     if t in ['dark','light']: u.theme=t; db.session.commit()
     return jsonify({'theme':u.theme})
@@ -106,11 +96,9 @@ def api_messages(chat_id):
     msgs = Message.query.filter_by(chat_id=chat_id).order_by(Message.timestamp.asc()).all()
     return jsonify([{'id':m.id,'chat_id':m.chat_id,'sender_id':m.sender_id,'text':m.text,'media':m.media,'timestamp':m.timestamp.isoformat()} for m in msgs])
 
-@app.route('/api/send_message', methods=['GET','POST'])
+@app.route('/api/send_message', methods=['POST'])
 @login_required
 def api_send_message():
-    if request.method == 'GET':
-        return jsonify({'info':'POST method required'})
     u=current_user(); d=request.json
     chat_id=int(d.get('chat_id',0)); text=(d.get('text') or '').strip(); media=d.get('media')
     if not chat_id or not (text or media): return jsonify({'error':'empty'}),400
@@ -124,8 +112,7 @@ def api_send_message():
 
 # --- Socket.IO ---
 @socketio.on('join_chat')
-def join(data):
-    join_room(f"chat_{data.get('chat_id')}")
+def join(data): join_room(f"chat_{data.get('chat_id')}")
 
 @socketio.on('call_user')
 def handle_call(data):
@@ -140,5 +127,4 @@ def handle_answer(data):
 # --- Run ---
 if __name__ == '__main__':
     with app.app_context(): db.create_all()
-    socketio.run(app, host='0.0.0.0', port=int(os.environ.get("PORT",5000)), allow_unsafe_werkzeug=True)
-
+    socketio.run(app, host='0.0.0.0', port=int(os.environ.get("PORT",5000)))
