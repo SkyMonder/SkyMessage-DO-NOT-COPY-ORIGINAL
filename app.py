@@ -1,27 +1,64 @@
 import os
-from flask import Flask, render_template, request, session, jsonify, abort
+from flask import Flask, request, jsonify, session, abort
 from flask_socketio import SocketIO, join_room
 from werkzeug.security import generate_password_hash, check_password_hash
-from sqlalchemy import or_
-from extensions import db
-from models import User, Chat, ChatMembers, Message, Call
+from flask_sqlalchemy import SQLAlchemy
+from datetime import datetime
 
+# --- App Setup ---
 app = Flask(__name__)
-app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'supersecret-dev')
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'supersecret')
 db_url = os.environ.get('DATABASE_URL', 'sqlite:///local.db')
 if db_url.startswith("postgres://"):
     db_url = db_url.replace("postgres://", "postgresql://", 1)
 app.config['SQLALCHEMY_DATABASE_URI'] = db_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-db.init_app(app)
+db = SQLAlchemy(app)
 
-socketio = SocketIO(app, cors_allowed_origins='*', async_mode='threading')
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
+
+# --- Models ---
+class User(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(50), unique=True)
+    password_hash = db.Column(db.String(200))
+    theme = db.Column(db.String(20), default='light')
+    avatar = db.Column(db.String(200))
+    chats = db.relationship('Chat', secondary='chat_members', back_populates='members')
+
+class Chat(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(50))
+    is_group = db.Column(db.Boolean, default=False)
+    members = db.relationship('User', secondary='chat_members', back_populates='chats')
+    messages = db.relationship('Message', backref='chat', lazy=True)
+
+class ChatMembers(db.Model):
+    __tablename__ = 'chat_members'
+    id = db.Column(db.Integer, primary_key=True)
+    chat_id = db.Column(db.Integer, db.ForeignKey('chat.id'))
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'))
+
+class Message(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    chat_id = db.Column(db.Integer, db.ForeignKey('chat.id'))
+    sender_id = db.Column(db.Integer, db.ForeignKey('user.id'))
+    text = db.Column(db.Text)
+    media = db.Column(db.Text)
+    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+
+class Call(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    caller_id = db.Column(db.Integer, db.ForeignKey('user.id'))
+    callee_id = db.Column(db.Integer, db.ForeignKey('user.id'))
+    status = db.Column(db.String(20))
+    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
 
 
+# --- Helpers ---
 def current_user():
     uid = session.get('user_id')
     return User.query.get(uid) if uid else None
-
 
 def login_required(fn):
     from functools import wraps
@@ -33,17 +70,9 @@ def login_required(fn):
     return wrapper
 
 
-# --- Views ---
-@app.route('/', methods=['GET'])
-def welcome():
-    return render_template('chats.html')
-
-
 # --- Auth ---
-@app.route('/register', methods=['GET', 'POST'])
+@app.route('/register', methods=['POST'])
 def register():
-    if request.method == 'GET':
-        return jsonify({'error': 'POST method required'}), 405
     data = request.get_json(force=True)
     username = (data.get('username','') or '').strip()
     password = (data.get('password','') or '').strip()
@@ -57,11 +86,8 @@ def register():
     session['user_id'] = user.id
     return jsonify({'ok':True})
 
-
-@app.route('/login', methods=['GET', 'POST'])
+@app.route('/login', methods=['POST'])
 def login():
-    if request.method == 'GET':
-        return jsonify({'error': 'POST method required'}), 405
     data = request.get_json(force=True)
     username = (data.get('username','') or '').strip()
     password = (data.get('password','') or '').strip()
@@ -70,7 +96,6 @@ def login():
         session['user_id'] = user.id
         return jsonify({'ok':True})
     return jsonify({'error':'wrong'}),401
-
 
 @app.route('/logout', methods=['GET'])
 def logout():
@@ -84,7 +109,6 @@ def api_me():
     u = current_user()
     return jsonify({'user': {'id': u.id,'username': u.username,'theme': u.theme,'avatar': u.avatar} if u else None})
 
-
 @app.route('/api/set_theme', methods=['POST'])
 @login_required
 def set_theme():
@@ -95,7 +119,6 @@ def set_theme():
         u.theme = t
         db.session.commit()
     return jsonify({'theme': u.theme})
-
 
 @app.route('/api/chats', methods=['GET'])
 @login_required
@@ -119,7 +142,6 @@ def api_chats():
     result.sort(key=lambda x: x['last']['timestamp'] or '', reverse=True)
     return jsonify(result)
 
-
 @app.route('/api/messages/<int:chat_id>', methods=['GET'])
 @login_required
 def api_messages(chat_id):
@@ -132,7 +154,6 @@ def api_messages(chat_id):
         {'id': m.id,'chat_id': m.chat_id,'sender_id': m.sender_id,
          'text': m.text,'media': m.media,'timestamp': m.timestamp.isoformat()} for m in msgs
     ])
-
 
 @app.route('/api/send_message', methods=['POST'])
 @login_required
@@ -161,14 +182,12 @@ def api_send_message():
 def join(data):
     join_room(f"chat_{data.get('chat_id')}")
 
-
 @socketio.on('call_user')
 def handle_call(data):
     callee = data.get('callee_id')
     chat_id = data.get('chat_id')
     caller = current_user()
     socketio.emit('incoming_call', {'caller_id': caller.id, 'chat_id': chat_id}, room=f"user_{callee}")
-
 
 @socketio.on('answer_call')
 def handle_answer(data):
@@ -179,6 +198,10 @@ def handle_answer(data):
 
 
 if __name__ == '__main__':
+    with app.app_context():
+        db.create_all()
+    socketio.run(app, host='0.0.0.0', port=int(os.environ.get("PORT",5000)), allow_unsafe_werkzeug=True)
+
     with app.app_context():
         db.create_all()
     socketio.run(app, host='0.0.0.0', port=int(os.environ.get("PORT", 5000)), allow_unsafe_werkzeug=True)
