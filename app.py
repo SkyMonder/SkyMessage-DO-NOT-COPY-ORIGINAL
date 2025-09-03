@@ -1,4 +1,7 @@
 import os
+import eventlet
+eventlet.monkey_patch()  # важно для async_mode='eventlet'
+
 from flask import Flask, render_template, request, redirect, url_for, session, jsonify, abort
 from flask_socketio import SocketIO, join_room
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -18,7 +21,8 @@ app.config['SQLALCHEMY_DATABASE_URI'] = db_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db.init_app(app)
 
-socketio = SocketIO(app, cors_allowed_origins='*', async_mode='threading')
+# Используем eventlet для Socket.IO
+socketio = SocketIO(app, cors_allowed_origins='*', async_mode='eventlet')
 
 # --- Utilities ---
 def current_user():
@@ -191,4 +195,3 @@ if __name__ == '__main__':
     with app.app_context():
         db.create_all()
     socketio.run(app, host='0.0.0.0', port=int(os.environ.get("PORT", 5000)))
-
