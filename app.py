@@ -2,9 +2,13 @@ import os
 from flask import Flask, render_template, request, redirect, url_for, session, jsonify, abort
 from flask_socketio import SocketIO, join_room
 from werkzeug.security import generate_password_hash, check_password_hash
-from sqlalchemy import or_, and_
+from sqlalchemy import or_
 from extensions import db
 from models import User, Chat, Message
+
+# --- Eventlet patch ---
+import eventlet
+eventlet.monkey_patch()
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'supersecret-dev')
@@ -15,10 +19,10 @@ if db_url.startswith("postgres://"):
     db_url = db_url.replace("postgres://", "postgresql://", 1)
 app.config['SQLALCHEMY_DATABASE_URI'] = db_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-
 db.init_app(app)
 
-socketio = SocketIO(app, cors_allowed_origins='*', async_mode='threading')
+# --- SocketIO с eventlet ---
+socketio = SocketIO(app, cors_allowed_origins='*', async_mode='eventlet')
 
 # --- Utilities ---
 def current_user():
@@ -125,19 +129,17 @@ def api_messages(chat_id):
 @login_required
 def api_search_user():
     u = current_user()
-    data = request.json or {}
-    q = (data.get('query') or '').strip()
+    q = (request.json or {}).get('query','').strip()
     if not q:
-        return jsonify({'error': 'empty_query'}), 400
-
-    exact = User.query.filter(and_(User.username==q, User.id!=u.id)).first()
+        return jsonify({'error':'empty_query'}), 400
+    exact = User.query.filter(User.username==q, User.id!=u.id).first()
     if exact:
-        return jsonify({'users':[{'id': exact.id, 'username': exact.username}]})
-
-    candidates = User.query.filter(and_(User.username.ilike(f"%{q}%"), User.id!=u.id)) \
-                           .order_by(User.username).limit(10).all()
-    result = [{'id': c.id, 'username': c.username} for c in candidates]
-    return jsonify({'users': result})
+        return jsonify({'user': {'id': exact.id, 'username': exact.username}})
+    # Ограничение для производительности
+    candidate = User.query.filter(User.username.ilike(f"%{q}%"), User.id!=u.id).limit(10).first()
+    if candidate:
+        return jsonify({'user': {'id': candidate.id, 'username': candidate.username}})
+    return jsonify({'user': None})
 
 @app.post('/api/create_chat')
 @login_required
@@ -172,7 +174,6 @@ def api_send_message():
     msg = Message(chat_id=chat.id, sender_id=u.id, text=text)
     db.session.add(msg)
     db.session.commit()
-
     payload = {
         'id': msg.id,
         'chat_id': chat.id,
@@ -180,10 +181,9 @@ def api_send_message():
         'text': msg.text,
         'timestamp': msg.timestamp.isoformat()
     }
-
+    # --- Отправка только П2 ---
     room = f"chat_{chat.id}"
-    socketio.emit('message', payload, room=room, include_self=False)  # ⚡ фиксим дубли для отправителя
-
+    socketio.emit('message', payload, room=room, skip_sid=request.sid)
     return jsonify(payload)
 
 # --- Socket.IO events ---
@@ -193,8 +193,9 @@ def on_join_chat(data):
     if chat_id:
         join_room(f"chat_{chat_id}")
 
+# --- Инициализация ---
 if __name__ == '__main__':
     with app.app_context():
         db.create_all()
-    # ⚠️ allow_unsafe_werkzeug=True позволяет использовать Werkzeug в продакшене (не рекомендуется для реального продакшена!)
+    # --- Разрешаем запуск с Werkzeug в Render ---
     socketio.run(app, host='0.0.0.0', port=int(os.environ.get("PORT", 5000)), allow_unsafe_werkzeug=True)
