@@ -2,15 +2,14 @@ import os
 from flask import Flask, render_template, request, session, jsonify, abort
 from flask_socketio import SocketIO, join_room
 from werkzeug.security import generate_password_hash, check_password_hash
-from sqlalchemy import or_
 from extensions import db
 from models import User, Chat, ChatMembers, Message, Call
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY','supersecret-dev')
-db_url = os.environ.get('DATABASE_URL')
-if not db_url:
-    raise RuntimeError("DATABASE_URL environment variable is required")
+
+# DATABASE
+db_url = os.environ.get('DATABASE_URL') or "postgresql://skybasemessage_user:HdT8RMSKCocfaMENmYOFVr9EaUpsIHjh@dpg-d2s9bsndiees73bg55qg-a/skybasemessage"
 if db_url.startswith("postgres://"):
     db_url = db_url.replace("postgres://", "postgresql://", 1)
 app.config['SQLALCHEMY_DATABASE_URI'] = db_url
@@ -48,7 +47,8 @@ def register():
     if User.query.filter_by(username=username).first():
         return jsonify({'error':'exists'}),400
     user = User(username=username,password_hash=generate_password_hash(password))
-    db.session.add(user); db.session.commit()
+    db.session.add(user)
+    db.session.commit()
     session['user_id'] = user.id
     return jsonify({'ok':True})
 
@@ -104,7 +104,8 @@ def api_chats():
 @app.route('/api/messages/<int:chat_id>', methods=['GET'])
 @login_required
 def api_messages(chat_id):
-    u=current_user(); chat=Chat.query.get_or_404(chat_id)
+    u=current_user()
+    chat=Chat.query.get_or_404(chat_id)
     if u not in chat.members: abort(403)
     msgs = Message.query.filter_by(chat_id=chat_id).order_by(Message.timestamp.asc()).all()
     return jsonify([{'id':m.id,'chat_id':m.chat_id,'sender_id':m.sender_id,'text':m.text,'media':m.media,'timestamp':m.timestamp.isoformat()} for m in msgs])
@@ -112,30 +113,69 @@ def api_messages(chat_id):
 @app.route('/api/send_message', methods=['POST'])
 @login_required
 def api_send_message():
-    u=current_user(); d=request.json
-    chat_id=int(d.get('chat_id',0)); text=(d.get('text') or '').strip(); media=d.get('media')
+    u=current_user()
+    d=request.json
+    chat_id=int(d.get('chat_id',0))
+    text=(d.get('text') or '').strip()
+    media=d.get('media')
     if not chat_id or not (text or media): return jsonify({'error':'empty'}),400
     chat=Chat.query.get_or_404(chat_id)
     if u not in chat.members: abort(403)
     msg=Message(chat_id=chat.id,sender_id=u.id,text=text,media=media)
-    db.session.add(msg); db.session.commit()
+    db.session.add(msg)
+    db.session.commit()
     payload={'id':msg.id,'chat_id':chat.id,'sender_id':u.id,'text':msg.text,'media':msg.media,'timestamp':msg.timestamp.isoformat()}
     socketio.emit('message',payload,room=f"chat_{chat.id}")
     return jsonify(payload)
 
+# --- Media upload ---
+@app.route('/api/upload_media', methods=['POST'])
+@login_required
+def upload_media():
+    if 'file' not in request.files or 'chat_id' not in request.form:
+        return jsonify({'error':'empty'}),400
+    f = request.files['file']
+    chat_id = int(request.form['chat_id'])
+    chat = Chat.query.get_or_404(chat_id)
+    u = current_user()
+    if u not in chat.members: abort(403)
+    
+    os.makedirs('static/uploads', exist_ok=True)
+    filename = f"{u.id}_{f.filename}"
+    path = os.path.join('static/uploads', filename)
+    f.save(path)
+    
+    msg = Message(chat_id=chat.id,sender_id=u.id,media=f"/static/uploads/{filename}")
+    db.session.add(msg)
+    db.session.commit()
+    
+    payload = {'id':msg.id,'chat_id':chat.id,'sender_id':u.id,'text':'','media':msg.media,'timestamp':msg.timestamp.isoformat()}
+    socketio.emit('message',payload,room=f"chat_{chat.id}")
+    return jsonify(payload)
+
 # --- Socket.IO ---
+@socketio.on('connect')
+def on_connect():
+    user_id = session.get('user_id')
+    if user_id:
+        join_room(f"user_{user_id}")
+
 @socketio.on('join_chat')
 def join(data):
     join_room(f"chat_{data.get('chat_id')}")
 
 @socketio.on('call_user')
 def handle_call(data):
-    callee=data.get('callee_id'); chat_id=data.get('chat_id'); caller=current_user()
+    callee=data.get('callee_id')
+    chat_id=data.get('chat_id')
+    caller=current_user()
     socketio.emit('incoming_call',{'caller_id':caller.id,'chat_id':chat_id},room=f"user_{callee}")
 
 @socketio.on('answer_call')
 def handle_answer(data):
-    caller_id=data.get('caller_id'); chat_id=data.get('chat_id'); status=data.get('status')
+    caller_id=data.get('caller_id')
+    chat_id=data.get('chat_id')
+    status=data.get('status')
     socketio.emit('call_answered',{'chat_id':chat_id,'status':status},room=f"user_{caller_id}")
 
 # --- Error handlers ---
@@ -159,4 +199,3 @@ if __name__ == '__main__':
     with app.app_context():
         db.create_all()
     socketio.run(app, host='0.0.0.0', port=int(os.environ.get("PORT",5000)), allow_unsafe_werkzeug=True)
-
