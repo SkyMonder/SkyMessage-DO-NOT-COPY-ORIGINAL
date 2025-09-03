@@ -39,8 +39,13 @@
       <section id="messages" class="flex-1 overflow-y-auto p-4 space-y-2"></section>
       <footer class="p-4 border-t border-slate-800 flex gap-2">
         <input id="msgInput" class="flex-1 px-4 py-3 rounded-xl bg-slate-800 border border-slate-700 focus:outline-none" placeholder="Сообщение..." />
+        <input type="file" id="fileInput" accept="image/*,video/*" class="hidden" />
+        <button id="fileBtn" class="px-3 py-2 rounded-xl bg-yellow-600 hover:bg-yellow-500">📎</button>
+        <button id="callBtn" class="px-3 py-2 rounded-xl bg-purple-600 hover:bg-purple-500">📞</button>
         <button id="sendBtn" class="px-4 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500">Отправить</button>
       </footer>
+      <video id="localVideo" autoplay muted class="w-32 h-32 hidden absolute bottom-4 right-4 rounded-xl border border-slate-700"></video>
+      <video id="remoteVideo" autoplay class="w-64 h-64 hidden absolute bottom-20 right-4 rounded-xl border border-slate-700"></video>
     </main>
   </div>
 
@@ -50,105 +55,128 @@ let chats = [];
 let selectedChatId = null;
 const socket = io();
 
-function fmtTime(iso){
-  if(!iso) return '';
-  const d = new Date(iso);
-  return d.toLocaleString();
-}
+// --- Формат времени ---
+function fmtTime(iso){ if(!iso) return ''; const d=new Date(iso); return d.toLocaleString(); }
 
-// --- Получаем текущего пользователя ---
-async function fetchMe(){
-  const r = await fetch('/api/me'); const j = await r.json(); me = j.user;
-}
+// --- Текущий пользователь ---
+async function fetchMe(){ const r=await fetch('/api/me'); me=(await r.json()).user; }
 
-// --- Получаем список чатов ---
+// --- Список чатов ---
 async function fetchChats(){
   const r = await fetch('/api/chats'); chats = await r.json();
   const list = document.getElementById('chatList'); list.innerHTML='';
   chats.forEach(c=>{
     const li = document.createElement('li');
-    li.className = 'px-3 py-3 hover:bg-slate-800 cursor-pointer border-b border-slate-800';
-    li.innerHTML = `<div class="font-semibold">@${c.peer.username}</div>
+    li.className='px-3 py-3 hover:bg-slate-800 cursor-pointer border-b border-slate-800';
+    li.innerHTML=`<div class="font-semibold">@${c.peer.username}</div>
       <div class="text-slate-400 text-sm truncate">${c.last.text || ''}</div>`;
-    li.onclick = ()=> selectChat(c.id, c.peer.username);
+    li.onclick=()=>selectChat(c.id,c.peer.username);
     list.appendChild(li);
   });
 }
 
-// --- Выбираем чат ---
+// --- Выбор чата ---
 async function selectChat(chatId, peerName){
   selectedChatId = chatId;
-  document.getElementById('chatHeader').innerHTML = '<div class="font-semibold">@'+peerName+'</div>';
-  document.getElementById('messages').innerHTML = '';
-  socket.emit('join_chat', {chat_id: chatId});
-  const r = await fetch('/api/messages/'+chatId); const msgs = await r.json();
+  document.getElementById('chatHeader').innerHTML='<div class="font-semibold">@'+peerName+'</div>';
+  document.getElementById('messages').innerHTML='';
+  socket.emit('join_chat', {chat_id:chatId});
+  const r = await fetch('/api/messages/'+chatId); const msgs=await r.json();
   msgs.forEach(renderMsg);
 }
 
-// --- Отображаем сообщение ---
+// --- Отображение сообщений ---
 function renderMsg(m){
-  const wrap = document.createElement('div');
-  const mine = m.sender_id === me.id;
-  wrap.className = 'max-w-[80%] '+(mine?'ml-auto text-right':'mr-auto text-left');
-  wrap.innerHTML = `<div class="inline-block px-3 py-2 rounded-xl ${mine?'bg-emerald-700':'bg-slate-800'}">
-    <div class="text-sm">${m.text}</div>
+  const wrap=document.createElement('div');
+  const mine=m.sender_id===me.id;
+  wrap.className='max-w-[80%] '+(mine?'ml-auto text-right':'mr-auto text-left');
+  let content=m.text;
+  if(m.media_url) content=`<a href="${m.media_url}" target="_blank">[Медиа]</a>`;
+  wrap.innerHTML=`<div class="inline-block px-3 py-2 rounded-xl ${mine?'bg-emerald-700':'bg-slate-800'}">
+    <div class="text-sm">${content}</div>
     <div class="text-[10px] text-slate-300 mt-1">${fmtTime(m.timestamp)}</div>
   </div>`;
-  const cont = document.getElementById('messages');
-  cont.appendChild(wrap);
-  cont.scrollTop = cont.scrollHeight;
+  document.getElementById('messages').appendChild(wrap);
+  document.getElementById('messages').scrollTop=document.getElementById('messages').scrollHeight;
 }
 
 // --- Отправка сообщений ---
-document.getElementById('sendBtn').onclick = async ()=>{
-  const input = document.getElementById('msgInput');
-  const text = input.value.trim();
-  if(!text || !selectedChatId) return;
-  const r = await fetch('/api/send_message', {
+document.getElementById('sendBtn').onclick=async()=>{
+  const input=document.getElementById('msgInput'); const text=input.value.trim();
+  if(!text&&!selectedChatId) return;
+  const r=await fetch('/api/send_message',{
     method:'POST',
     headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({chat_id: selectedChatId, text})
+    body:JSON.stringify({chat_id:selectedChatId,text})
   });
-  const j = await r.json();
-  if(r.ok){ 
-    input.value=''; 
-    renderMsg(j); // сразу отображаем своё сообщение
-  }
+  const j=await r.json();
+  if(r.ok) input.value='';
+  // НЕ дублируем сообщение, сервер отправит через socket.io
+};
+
+// --- Загрузка файлов ---
+document.getElementById('fileBtn').onclick=()=>document.getElementById('fileInput').click();
+document.getElementById('fileInput').onchange=async(e)=>{
+  const file=e.target.files[0]; if(!file||!selectedChatId) return;
+  const fd=new FormData(); fd.append('file',file); fd.append('chat_id',selectedChatId);
+  const r=await fetch('/api/upload_media',{method:'POST',body:fd});
+  const j=await r.json();
+  if(r.ok) { input.value=''; } // сервер пришлёт через socket.io
 };
 
 // --- Поиск пользователей ---
-document.getElementById('searchBtn').onclick = async ()=>{
-  const q = document.getElementById('searchInput').value.trim();
-  const res = document.getElementById('searchResult');
-  res.textContent = 'Поиск...';
-  const r = await fetch('/api/search_user', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({query:q})});
-  const j = await r.json();
-  if(!j.user){ res.textContent = 'Никто не найден'; return; }
-  res.innerHTML = `Найден: <b>@${j.user.username}</b> <button id="startChat" class="ml-2 px-2 py-1 rounded bg-blue-600">Открыть чат</button>`;
-  document.getElementById('startChat').onclick = async ()=>{
-    const r2 = await fetch('/api/create_chat', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({peer_id: j.user.id})});
-    const j2 = await r2.json();
-    await fetchChats();
-    selectChat(j2.chat_id, j.user.username);
+document.getElementById('searchBtn').onclick=async()=>{
+  const q=document.getElementById('searchInput').value.trim(); const res=document.getElementById('searchResult'); res.textContent='Поиск...';
+  const r=await fetch('/api/search_user',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:q})});
+  const j=await r.json();
+  if(!j.user){ res.textContent='Никто не найден'; return; }
+  res.innerHTML=`Найден: <b>@${j.user.username}</b> <button id="startChat" class="ml-2 px-2 py-1 rounded bg-blue-600">Открыть чат</button>`;
+  document.getElementById('startChat').onclick=async()=>{
+    const r2=await fetch('/api/create_chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({peer_id:j.user.id})});
+    const j2=await r2.json(); await fetchChats(); selectChat(j2.chat_id,j.user.username);
   };
 };
 
+// --- WebRTC звонки ---
+let localStream, pc;
+document.getElementById('callBtn').onclick=startCall;
+async function startCall(){
+  localStream=await navigator.mediaDevices.getUserMedia({audio:true,video:true});
+  document.getElementById('localVideo').srcObject=localStream;
+  document.getElementById('localVideo').classList.remove('hidden');
+
+  pc=new RTCPeerConnection();
+  localStream.getTracks().forEach(t=>pc.addTrack(t,localStream));
+  pc.ontrack=e=>{ document.getElementById('remoteVideo').srcObject=e.streams[0]; document.getElementById('remoteVideo').classList.remove('hidden'); };
+  pc.onicecandidate=e=>{ if(e.candidate) socket.emit('webrtc_ice',{candidate:e.candidate,chat_id:selectedChatId}); };
+
+  const offer=await pc.createOffer(); await pc.setLocalDescription(offer);
+  socket.emit('webrtc_offer',{sdp:offer,chat_id:selectedChatId});
+}
+
 // --- Socket.IO ---
-socket.on('connect', ()=>{});
-socket.on('message', (m)=>{
-  if(m.chat_id === selectedChatId){
-    renderMsg(m);
-  } else {
-    fetchChats();
-  }
+socket.on('connect',()=>{});
+socket.on('message',m=>{ if(m.chat_id===selectedChatId) renderMsg(m); else fetchChats(); });
+
+// WebRTC сигнализация
+socket.on('webrtc_offer',async m=>{
+  if(m.chat_id!==selectedChatId) return;
+  localStream=await navigator.mediaDevices.getUserMedia({audio:true,video:true});
+  document.getElementById('localVideo').srcObject=localStream; document.getElementById('localVideo').classList.remove('hidden');
+
+  pc=new RTCPeerConnection();
+  localStream.getTracks().forEach(t=>pc.addTrack(t,localStream));
+  pc.ontrack=e=>{ document.getElementById('remoteVideo').srcObject=e.streams[0]; document.getElementById('remoteVideo').classList.remove('hidden'); };
+  pc.onicecandidate=e=>{ if(e.candidate) socket.emit('webrtc_ice',{candidate:e.candidate,chat_id:selectedChatId}); };
+  await pc.setRemoteDescription(new RTCSessionDescription(m.sdp));
+  const answer=await pc.createAnswer(); await pc.setLocalDescription(answer);
+  socket.emit('webrtc_answer',{sdp:answer,chat_id:selectedChatId});
 });
+socket.on('webrtc_answer',async m=>{ await pc.setRemoteDescription(new RTCSessionDescription(m.sdp)); });
+socket.on('webrtc_ice',m=>{ if(pc) pc.addIceCandidate(new RTCIceCandidate(m.candidate)); });
 
 // --- Инициализация ---
-(async function init(){
-  await fetchMe();
-  if(!me){ window.location = '/login'; return; }
-  await fetchChats();
-})();
+(async function init(){ await fetchMe(); if(!me){ window.location='/login'; return; } await fetchChats(); })();
 </script>
 </body>
 </html>
