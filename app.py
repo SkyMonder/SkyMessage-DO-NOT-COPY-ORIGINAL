@@ -28,16 +28,15 @@ def login_required(fn):
         return fn(*args, **kwargs)
     return wrapper
 
-@app.route('/', methods=['GET'])
+@app.get('/')
 def welcome(): return render_template('chats.html')
 
 # --- Auth ---
-@app.route('/register', methods=['GET','POST'])
+@app.route('/register', methods=['POST'])
 def register():
-    if request.method=='GET': return render_template('register.html')
-    data = request.json or {}
-    username = data.get('username','').strip()
-    password = data.get('password','').strip()
+    data = request.get_json(silent=True) or request.form
+    username = (data.get('username','') or '').strip()
+    password = (data.get('password','') or '').strip()
     if not username or not password: return jsonify({'error':'empty'}),400
     if User.query.filter_by(username=username).first(): return jsonify({'error':'exists'}),400
     user = User(username=username,password_hash=generate_password_hash(password))
@@ -45,37 +44,34 @@ def register():
     session['user_id'] = user.id
     return jsonify({'ok':True})
 
-@app.route('/login', methods=['GET','POST'])
+@app.route('/login', methods=['POST'])
 def login():
-    if request.method=='GET': return render_template('login.html')
-    data = request.json or {}
-    username = data.get('username','').strip()
-    password = data.get('password','').strip()
+    data = request.get_json(silent=True) or request.form
+    username = (data.get('username','') or '').strip()
+    password = (data.get('password','') or '').strip()
     user = User.query.filter_by(username=username).first()
     if user and check_password_hash(user.password_hash,password):
         session['user_id']=user.id
         return jsonify({'ok':True})
     return jsonify({'error':'wrong'}),401
 
-@app.route('/logout', methods=['GET'])
+@app.get('/logout')
 def logout(): session.pop('user_id',None); return jsonify({'ok':True})
 
 # --- API ---
-@app.route('/api/me', methods=['GET'])
+@app.get('/api/me')
 def api_me():
-    u=current_user()
-    return jsonify({'user':{'id':u.id,'username':u.username,'theme':u.theme,'avatar':u.avatar} if u else None})
+    u=current_user(); return jsonify({'user':{'id':u.id,'username':u.username,'theme':u.theme,'avatar':u.avatar} if u else None})
 
-@app.route('/api/set_theme', methods=['GET','POST'])
+@app.route('/api/set_theme', methods=['POST'])
 @login_required
 def set_theme():
-    u=current_user()
-    if request.method=='GET': return jsonify({'theme': u.theme})
-    t=request.json.get('theme')
+    data = request.get_json(silent=True) or request.form
+    u=current_user(); t=data.get('theme')
     if t in ['dark','light']: u.theme=t; db.session.commit()
     return jsonify({'theme':u.theme})
 
-@app.route('/api/chats', methods=['GET'])
+@app.get('/api/chats')
 @login_required
 def api_chats():
     u=current_user()
@@ -88,7 +84,7 @@ def api_chats():
     result.sort(key=lambda x:x['last']['timestamp'] or '',reverse=True)
     return jsonify(result)
 
-@app.route('/api/messages/<int:chat_id>', methods=['GET'])
+@app.get('/api/messages/<int:chat_id>')
 @login_required
 def api_messages(chat_id):
     u=current_user(); chat=Chat.query.get_or_404(chat_id)
@@ -99,8 +95,11 @@ def api_messages(chat_id):
 @app.route('/api/send_message', methods=['POST'])
 @login_required
 def api_send_message():
-    u=current_user(); d=request.json
-    chat_id=int(d.get('chat_id',0)); text=(d.get('text') or '').strip(); media=d.get('media')
+    data = request.get_json(silent=True) or request.form
+    u=current_user()
+    chat_id=int(data.get('chat_id',0))
+    text=(data.get('text') or '').strip()
+    media=data.get('media')
     if not chat_id or not (text or media): return jsonify({'error':'empty'}),400
     chat=Chat.query.get_or_404(chat_id)
     if u not in chat.members: abort(403)
@@ -112,7 +111,8 @@ def api_send_message():
 
 # --- Socket.IO ---
 @socketio.on('join_chat')
-def join(data): join_room(f"chat_{data.get('chat_id')}")
+def join(data):
+    join_room(f"chat_{data.get('chat_id')}")
 
 @socketio.on('call_user')
 def handle_call(data):
@@ -124,13 +124,6 @@ def handle_answer(data):
     caller_id=data.get('caller_id'); chat_id=data.get('chat_id'); status=data.get('status')
     socketio.emit('call_answered',{'chat_id':chat_id,'status':status},room=f"user_{caller_id}")
 
-# --- Run ---
 if __name__ == '__main__':
-    with app.app_context():
-        db.create_all()
-    socketio.run(
-        app,
-        host='0.0.0.0',
-        port=int(os.environ.get("PORT", 5000)),
-        allow_unsafe_werkzeug=True
-    )
+    with app.app_context(): db.create_all()
+    socketio.run(app, host='0.0.0.0', port=int(os.environ.get("PORT",5000)), allow_unsafe_werkzeug=True)
